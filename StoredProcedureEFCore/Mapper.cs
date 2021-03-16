@@ -70,8 +70,17 @@ namespace StoredProcedureEFCore
             T row = new T();
             for (int i = 0; i < _properties.Length; ++i)
             {
-                object value = _reader.IsDBNull(_properties[i].ColumnOrdinal) ? null : _reader.GetValue(_properties[i].ColumnOrdinal);
-                _properties[i].Setter(row, value);
+                var col = _properties[i];
+                object value = _reader.IsDBNull(col.ColumnOrdinal) == false
+                    ? _reader.GetValue(col.ColumnOrdinal)
+                    : null;
+
+                // attempting to cast row.col = (ValueType)null;
+                // throws a confusing NullReferenceException at runtime
+                if (value != null || col.AcceptsNull)
+                {
+                    col.Setter(row, value);
+                }
             }
             return row;
         }
@@ -109,8 +118,6 @@ namespace StoredProcedureEFCore
 
         private Prop[] MapColumnsToProperties()
         {
-            Type modelType = typeof(T);
-
             string[] columns = new string[_reader.FieldCount];
             for (int i = 0; i < _reader.FieldCount; ++i)
                 columns[i] = _reader.GetName(i);
@@ -121,14 +128,19 @@ namespace StoredProcedureEFCore
                 return s;
             }
 
+            var modelType = typeof(T);
+            var modelTypeName = modelType.Name;
             var properties = new List<Prop>(columns.Length);
+
             for (int i = 0; i < columns.Length; i++)
             {
                 string name = columns[i].Replace("_", "");
                 PropertyInfo prop = modelType.GetProperty(name, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
-                if (prop == null)
+
+                if (prop == null || prop.SetMethod == null)
                     continue;
 
+                // couldn't this just be modelType and not do the cast?
                 ParameterExpression instance = Expression.Parameter(typeof(object), "instance");
                 ParameterExpression value = Expression.Parameter(typeof(object), "value");
 
@@ -141,18 +153,29 @@ namespace StoredProcedureEFCore
                     ? Expression.Convert(value, prop.PropertyType)
                     : Expression.TypeAs(value, prop.PropertyType);
 
-                MethodCallExpression setterCall = Expression.Call(instanceCast, prop.GetSetMethod(), valueCast);
-                var setter = (Action<object, object>) Expression.Lambda(setterCall, instance, value).Compile();
+                var parameters= new[] { instance, value };
+                var setterCall = Expression.Call(instanceCast, prop.GetSetMethod(), valueCast);
+                var methodName = string.Concat(modelTypeName, "_set_", name);
+                var setter = Expression.Lambda<Action<object, object>>(setterCall,  methodName, parameters)
+                    .Compile();
 
                 properties.Add(new Prop
                 {
                     ColumnOrdinal = i,
                     Setter = setter,
+                    AcceptsNull = SetterAcceptsNull(prop.PropertyType)
                 });
             }
+
             Prop[] propertiesArray = properties.ToArray();
             PropertiesCache[propKey] = propertiesArray;
             return propertiesArray;
+        }
+
+        private static bool SetterAcceptsNull(Type propertyType)
+        {
+            return propertyType.IsValueType == false
+                || propertyType == typeof(Nullable<>);
         }
     }
 }
