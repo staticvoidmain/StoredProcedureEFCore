@@ -140,7 +140,6 @@ namespace StoredProcedureEFCore
                 if (prop == null || prop.SetMethod == null)
                     continue;
 
-                // couldn't this just be modelType and not do the cast?
                 ParameterExpression instance = Expression.Parameter(typeof(object), "instance");
                 ParameterExpression value = Expression.Parameter(typeof(object), "value");
 
